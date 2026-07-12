@@ -53,7 +53,7 @@ function sendSseEvent(res: Response, event: string, data: unknown): void {
 }
 
 function progressFingerprint(p: ImportProgress): string {
-  return `${p.status}|${p.batchesDone}|${p.importedCount}|${p.skippedCount}|${p.failedBatches.length}`;
+  return `${p.status}|${p.batchesDone}|${p.batchesTotal}|${p.importedCount}|${p.skippedCount}|${p.failedBatches.length}|${p.activeBatchIndex ?? ''}`;
 }
 
 export async function streamImportProgress(jobId: string, res: Response): Promise<void> {

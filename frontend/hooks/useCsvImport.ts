@@ -26,9 +26,8 @@ export function useCsvImport(): UseCsvImportResult {
       const message =
         err instanceof ApiError ? err.message : 'Failed to start import. Please try again.';
       setError(message);
-      return null;
-    } finally {
       setIsSubmitting(false);
+      return null;
     }
   }, []);
 

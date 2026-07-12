@@ -53,6 +53,8 @@ export interface ImportProgress {
   activeBatchIndex?: number;
 }
 
+export type ResultFilter = 'all' | 'imported' | 'skipped' | 'low-confidence';
+
 export interface ImportResults {
   summary: {
     totalRows: number;
@@ -61,8 +63,14 @@ export interface ImportResults {
     status: string;
     failedBatches: Array<{ batchIndex: number; error: string }>;
   };
-  imported: CrmRecord[];
-  skipped: CrmRecord[];
+  records: CrmRecord[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+    filter: ResultFilter;
+  };
 }
 
 export type ImportStep = 'upload' | 'preview' | 'confirm' | 'processing' | 'result';

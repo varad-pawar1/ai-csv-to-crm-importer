@@ -130,6 +130,76 @@ export function mapToCrmRecord(raw: RawLlmRow): CrmRecord {
   return record;
 }
 
+export function getLeadDedupKey(record: Pick<CrmRecord, 'email' | 'mobile_without_country_code'>): string | null {
+  const email = record.email?.trim().toLowerCase();
+  if (email) return `email:${email}`;
+  const phone = record.mobile_without_country_code?.replace(/\D/g, '');
+  if (phone && phone.length >= 7) return `phone:${phone}`;
+  return null;
+}
+
+export function mergeCrmRecords(primary: CrmRecord, secondary: CrmRecord): CrmRecord {
+  const merged = { ...primary };
+  for (const field of CRM_FIELDS) {
+    if (!merged[field] && secondary[field]) {
+      (merged as Record<string, unknown>)[field] = secondary[field];
+    }
+  }
+  if (secondary.crm_note) {
+    merged.crm_note = appendNote(merged.crm_note, secondary.crm_note);
+  }
+  merged._confidence = { ...secondary._confidence, ...merged._confidence };
+  return merged;
+}
+
+export interface MappedLeadDoc {
+  mappedData: CrmRecord;
+  skipped: boolean;
+  skipReason: string | null;
+  rowIndex: number;
+}
+
+/** Merge duplicate contacts within one batch when dedupPolicy is "merge". */
+export function deduplicateBatchLeads(
+  leadDocs: MappedLeadDoc[],
+  dedupPolicy: 'keep_both' | 'merge'
+): MappedLeadDoc[] {
+  if (dedupPolicy !== 'merge') return leadDocs;
+
+  const seen = new Map<string, number>();
+
+  for (let i = 0; i < leadDocs.length; i++) {
+    const doc = leadDocs[i]!;
+    const key = getLeadDedupKey(doc.mappedData);
+    if (!key) continue;
+
+    if (seen.has(key)) {
+      const prevIdx = seen.get(key)!;
+      const prev = leadDocs[prevIdx]!;
+
+      prev.mappedData = mergeCrmRecords(prev.mappedData, doc.mappedData);
+      if (!prev.mappedData._skipped && doc.mappedData._skipped) {
+        prev.skipped = false;
+        prev.skipReason = null;
+        prev.mappedData._skipped = false;
+        prev.mappedData._skip_reason = null;
+      }
+
+      doc.skipped = true;
+      doc.skipReason = 'Merged duplicate into earlier row in batch';
+      doc.mappedData = {
+        ...doc.mappedData,
+        _skipped: true,
+        _skip_reason: doc.skipReason,
+      };
+    } else {
+      seen.set(key, i);
+    }
+  }
+
+  return leadDocs;
+}
+
 export function sanitizeForCsvExport(value: unknown): string {
   if (value === null || value === undefined) return '';
   const str = String(value);

@@ -26,10 +26,22 @@ export async function enqueueBatches(
   dedupPolicy: 'keep_both' | 'merge'
 ): Promise<void> {
   const queue = getBatchQueue();
-  const jobs = batches.map((rows, batchIndex) => ({
-    name: `batch-${importJobId}-${batchIndex}`,
-    data: { importJobId, batchIndex, headers, rows, dedupPolicy },
-    opts: { jobId: `${importJobId}-${batchIndex}` },
-  }));
+  let rowOffset = 0;
+  const jobs = batches.map((rows, batchIndex) => {
+    const job = {
+      name: `batch-${importJobId}-${batchIndex}`,
+      data: {
+        importJobId,
+        batchIndex,
+        startRowIndex: rowOffset,
+        headers,
+        rows,
+        dedupPolicy,
+      },
+      opts: { jobId: `${importJobId}-${batchIndex}` },
+    };
+    rowOffset += rows.length;
+    return job;
+  });
   await queue.addBulk(jobs);
 }

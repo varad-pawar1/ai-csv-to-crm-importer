@@ -77,6 +77,7 @@ export interface ImportProgress {
 export interface BatchJobData {
   importJobId: string;
   batchIndex: number;
+  startRowIndex: number;
   headers: string[];
   rows: Record<string, string>[];
   dedupPolicy: DedupPolicy;
