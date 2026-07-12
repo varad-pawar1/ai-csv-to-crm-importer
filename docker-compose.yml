@@ -1,24 +1,84 @@
-version: "3.8"
+version: "3.9"
 
 services:
+
   mongodb:
     image: mongo:7
-    container_name: groweasy-mongodb
+    container_name: mongodb
+    restart: unless-stopped
+
     ports:
       - "27017:27017"
+
     volumes:
       - mongodb_data:/data/db
-    environment:
-      MONGO_INITDB_DATABASE: groweasy
 
   redis:
     image: redis:7-alpine
-    container_name: groweasy-redis
+    container_name: redis
+    restart: unless-stopped
+
     ports:
       - "6379:6379"
-    volumes:
-      - redis_data:/data
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+
+    container_name: backend
+
+    restart: unless-stopped
+
+    depends_on:
+      - mongodb
+      - redis
+
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+
+      MONGODB_URI: mongodb://mongodb:27017/groweasy
+
+      REDIS_URL: redis://redis:6379
+
+      CORS_ORIGIN: http://localhost:3000
+
+      AI_PROVIDER: openai
+      AI_FALLBACK_PROVIDER: anthropic
+
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+      OPENAI_MODEL: gpt-4o-mini
+      ANTHROPIC_MODEL: claude-3-5-haiku-latest
+      GEMINI_MODEL: gemini-2.0-flash
+
+      BATCH_SIZE: 20
+      MAX_FILE_SIZE_MB: 10
+      MAX_CSV_ROWS: 50000
+
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+
+    container_name: frontend
+
+    restart: unless-stopped
+
+    depends_on:
+      - backend
+
+    environment:
+      NEXT_PUBLIC_API_URL: http://backend:4000
+
+    ports:
+      - "3000:3000"
 
 volumes:
   mongodb_data:
-  redis_data:
