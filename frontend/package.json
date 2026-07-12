@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
+    "build": "cross-env NODE_ENV=production next build",
     "start": "next start",
     "lint": "next lint"
   },
@@ -25,6 +25,7 @@
     "@types/react-dom": "^18.3.5",
     "@types/react-window": "^1.8.8",
     "autoprefixer": "^10.4.20",
+    "cross-env": "^7.0.3",
     "eslint": "^8.57.1",
     "eslint-config-next": "14.2.21",
     "postcss": "^8.4.49",

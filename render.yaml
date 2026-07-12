@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: groweasy-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NEXT_PUBLIC_API_URL
+        sync: false
+
+  - type: web
+    name: groweasy-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: QUEUE_REDIS_HOST
+        sync: false
+      - key: QUEUE_REDIS_PORT
+        sync: false
+      - key: QUEUE_REDIS_USERNAME
+        sync: false
+      - key: QUEUE_REDIS_PASSWORD
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: CORS_ORIGIN
+        sync: false

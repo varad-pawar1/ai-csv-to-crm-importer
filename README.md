@@ -152,8 +152,20 @@ RUN_INTEGRATION_TESTS=true npm run test --workspace=backend
 
 ## Deployment
 
-- **Frontend**: Vercel — set `NEXT_PUBLIC_API_URL` to your Railway backend URL
-- **Backend**: Railway — add MongoDB and Redis plugins, set env vars from `backend/.env`
+- **Frontend**: Vercel or Render — set `NEXT_PUBLIC_API_URL` to your backend URL
+- **Backend**: Railway or Render — MongoDB + Redis, env vars from `backend/.env`
+
+### Render (important)
+
+Render sets `NODE_ENV=development` during build by default, which breaks Next.js static generation. The frontend build script already forces production mode via `cross-env`.
+
+**Frontend service settings:**
+- Root Directory: `frontend`
+- Build Command: `npm install --include=dev && npm run build`
+- Start Command: `npm start`
+- Env: `NODE_ENV=production`, `NEXT_PUBLIC_API_URL=https://your-backend.onrender.com`
+
+Or use the included [`render.yaml`](render.yaml) Blueprint.
 
 ## Known Limitations
 
