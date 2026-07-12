@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { parseCsvContent } from '../src/services/csvParser.service';
 import { chunkRows } from '../src/services/batcher.service';
+import { normalizeConfidenceField } from '../src/services/aiExtractor.service';
 import {
   mapToCrmRecord,
   sanitizeForCsvExport,
   recordToExportRow,
   createEmptyCrmRecord,
+  getLeadDedupKey,
+  deduplicateBatchLeads,
 } from '../src/services/crmMapper.service';
 
 describe('csvParser.service', () => {
@@ -104,5 +107,84 @@ describe('crmMapper.service', () => {
     const row = recordToExportRow(record);
     expect(row.email).toBe('test@test.com');
     expect(row._skipped).toBe('false');
+  });
+
+  it('builds dedup key from email or phone', () => {
+    expect(getLeadDedupKey({ email: 'Test@Example.com', mobile_without_country_code: null })).toBe(
+      'email:test@example.com'
+    );
+    expect(
+      getLeadDedupKey({ email: null, mobile_without_country_code: '+91 98765 43210' })
+    ).toBe('phone:919876543210');
+  });
+
+  it('merges duplicate leads in batch when policy is merge', () => {
+    const docs = deduplicateBatchLeads(
+      [
+        {
+          rowIndex: 0,
+          skipped: false,
+          skipReason: null,
+          mappedData: mapToCrmRecord({
+            name: 'Customer 35',
+            email: 'customer35@example.com',
+            mobile_without_country_code: '6005253783',
+            crm_status: null,
+          }),
+        },
+        {
+          rowIndex: 1,
+          skipped: false,
+          skipReason: null,
+          mappedData: mapToCrmRecord({
+            name: 'Customer 35',
+            email: 'customer35@example.com',
+            mobile_without_country_code: '6005253783',
+            crm_status: 'SALE_DONE',
+          }),
+        },
+      ],
+      'merge'
+    );
+
+    expect(docs[0]!.skipped).toBe(false);
+    expect(docs[0]!.mappedData.crm_status).toBe('SALE_DONE');
+    expect(docs[1]!.skipped).toBe(true);
+    expect(docs[1]!.skipReason).toContain('Merged duplicate');
+  });
+
+  it('keeps both duplicate contacts when policy is keep_both', () => {
+    const docs = deduplicateBatchLeads(
+      [
+        {
+          rowIndex: 0,
+          skipped: false,
+          skipReason: null,
+          mappedData: mapToCrmRecord({ email: 'dup@test.com' }),
+        },
+        {
+          rowIndex: 1,
+          skipped: false,
+          skipReason: null,
+          mappedData: mapToCrmRecord({ email: 'dup@test.com' }),
+        },
+      ],
+      'keep_both'
+    );
+
+    expect(docs[0]!.skipped).toBe(false);
+    expect(docs[1]!.skipped).toBe(false);
+  });
+});
+
+describe('aiExtractor.service', () => {
+  it('normalizes malformed _confidence values from LLM output', () => {
+    expect(normalizeConfidenceField('high')).toEqual({});
+    expect(normalizeConfidenceField(null)).toBeUndefined();
+    expect(normalizeConfidenceField({ name: 'high', email: 'invalid' })).toEqual({ name: 'high' });
+    expect(normalizeConfidenceField({ name: 'medium', email: 'low' })).toEqual({
+      name: 'medium',
+      email: 'low',
+    });
   });
 });

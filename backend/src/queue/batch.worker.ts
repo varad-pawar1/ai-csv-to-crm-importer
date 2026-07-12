@@ -4,14 +4,50 @@ import { getRedisConnection, BATCH_QUEUE_NAME } from './connection';
 import { BatchJobData } from '../types/crm.types';
 import { ImportJob, LeadRecord, BatchLog } from '../models';
 import { extractCrmRecordsWithMock } from '../services/aiExtractor.service';
-import { mapToCrmRecord } from '../services/crmMapper.service';
+import {
+  mapToCrmRecord,
+  deduplicateBatchLeads,
+  MappedLeadDoc,
+} from '../services/crmMapper.service';
 import { childLogger } from '../utils/logger';
-import { getEnv } from '../config/env';
 
 let worker: Worker<BatchJobData> | null = null;
 
+async function clearPreviousBatchRecords(
+  importJobId: string,
+  startRowIndex: number,
+  rowCount: number
+): Promise<{ prevImported: number; prevSkipped: number }> {
+  const endRowIndex = startRowIndex + rowCount - 1;
+  const existing = await LeadRecord.find({
+    importJobId: new Types.ObjectId(importJobId),
+    rowIndex: { $gte: startRowIndex, $lte: endRowIndex },
+  });
+
+  if (existing.length === 0) {
+    return { prevImported: 0, prevSkipped: 0 };
+  }
+
+  const prevImported = existing.filter((r) => !r.skipped).length;
+  const prevSkipped = existing.filter((r) => r.skipped).length;
+
+  await LeadRecord.deleteMany({
+    importJobId: new Types.ObjectId(importJobId),
+    rowIndex: { $gte: startRowIndex, $lte: endRowIndex },
+  });
+
+  if (prevImported > 0 || prevSkipped > 0) {
+    await ImportJob.updateOne(
+      { _id: importJobId },
+      { $inc: { importedCount: -prevImported, skippedCount: -prevSkipped } }
+    );
+  }
+
+  return { prevImported, prevSkipped };
+}
+
 async function processBatch(job: Job<BatchJobData>): Promise<void> {
-  const { importJobId, batchIndex, headers, rows, dedupPolicy } = job.data;
+  const { importJobId, batchIndex, startRowIndex, headers, rows, dedupPolicy } = job.data;
   const log = childLogger({ importJobId, batchIndex, jobId: job.id });
 
   await BatchLog.updateOne(
@@ -24,7 +60,7 @@ async function processBatch(job: Job<BatchJobData>): Promise<void> {
     { $set: { status: 'processing' } }
   );
 
-  log.info({ rowCount: rows.length }, 'Processing batch');
+  log.info({ rowCount: rows.length, startRowIndex }, 'Processing batch');
 
   await job.updateProgress({
     phase: 'llm_processing',
@@ -33,19 +69,20 @@ async function processBatch(job: Job<BatchJobData>): Promise<void> {
     message: `AI mapping ${rows.length} rows...`,
   });
 
+  const cleared = await clearPreviousBatchRecords(importJobId, startRowIndex, rows.length);
+  if (cleared.prevImported + cleared.prevSkipped > 0) {
+    log.info(cleared, 'Cleared previous batch records before retry');
+  }
+
   const { rows: llmRows } = await extractCrmRecordsWithMock(headers, rows);
 
-  let imported = 0;
-  let skipped = 0;
-  const startRowIndex = batchIndex * getEnv().BATCH_SIZE;
+  if (llmRows.length !== rows.length) {
+    throw new Error(`LLM returned ${llmRows.length} records, expected ${rows.length}`);
+  }
 
-  const leadDocs = llmRows.map((raw, i) => {
+  let leadDocs: MappedLeadDoc[] = llmRows.map((raw, i) => {
     const mapped = mapToCrmRecord(raw);
-    if (mapped._skipped) skipped++;
-    else imported++;
-
     return {
-      importJobId: new Types.ObjectId(importJobId),
       mappedData: mapped,
       skipped: mapped._skipped,
       skipReason: mapped._skip_reason,
@@ -53,34 +90,24 @@ async function processBatch(job: Job<BatchJobData>): Promise<void> {
     };
   });
 
-  if (dedupPolicy === 'merge') {
-    const seen = new Map<string, number>();
-    for (let i = 0; i < leadDocs.length; i++) {
-      const data = leadDocs[i].mappedData as { email?: string | null; mobile_without_country_code?: string | null };
-      const key = data.email || data.mobile_without_country_code || '';
-      if (key && seen.has(key)) {
-        const prevIdx = seen.get(key)!;
-        const prev = leadDocs[prevIdx]!.mappedData as unknown as Record<string, unknown>;
-        const curr = leadDocs[i]!.mappedData as unknown as Record<string, unknown>;
-        for (const [k, v] of Object.entries(curr)) {
-          if (v && !prev[k] && k !== '_skipped' && k !== '_skip_reason') {
-            prev[k] = v;
-          }
-        }
-        leadDocs[i].skipped = true;
-        leadDocs[i].skipReason = 'Merged duplicate into earlier row';
-        leadDocs[i].mappedData = { ...leadDocs[i].mappedData, _skipped: true, _skip_reason: 'Merged duplicate' };
-        if (!leadDocs[prevIdx].skipped) {
-          skipped++;
-          imported--;
-        }
-      } else if (key) {
-        seen.set(key, i);
-      }
-    }
+  leadDocs = dedupPolicy === 'merge' ? deduplicateBatchLeads(leadDocs, dedupPolicy) : leadDocs;
+
+  let imported = 0;
+  let skipped = 0;
+  for (const doc of leadDocs) {
+    if (doc.skipped) skipped++;
+    else imported++;
   }
 
-  await LeadRecord.insertMany(leadDocs);
+  await LeadRecord.insertMany(
+    leadDocs.map((doc) => ({
+      importJobId: new Types.ObjectId(importJobId),
+      mappedData: doc.mappedData,
+      skipped: doc.skipped,
+      skipReason: doc.skipReason,
+      rowIndex: doc.rowIndex,
+    }))
+  );
 
   await BatchLog.updateOne(
     { importJobId: new Types.ObjectId(importJobId), batchIndex },

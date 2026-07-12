@@ -16,6 +16,22 @@ export interface AiProvider {
 }
 
 const confidenceSchema = z.enum(['high', 'medium', 'low']);
+
+/** LLMs sometimes return _confidence as a bare string instead of a per-field object. */
+export function normalizeConfidenceField(
+  value: unknown
+): Partial<Record<string, z.infer<typeof confidenceSchema>>> | undefined {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) return {};
+
+  const normalized: Partial<Record<string, z.infer<typeof confidenceSchema>>> = {};
+  for (const [field, confidence] of Object.entries(value as Record<string, unknown>)) {
+    const parsed = confidenceSchema.safeParse(confidence);
+    if (parsed.success) normalized[field] = parsed.data;
+  }
+  return normalized;
+}
+
 const rowSchema = z.object({
   created_at: z.string().nullable().optional(),
   name: z.string().nullable().optional(),
@@ -32,7 +48,7 @@ const rowSchema = z.object({
   data_source: z.string().nullable().optional(),
   possession_time: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
-  _confidence: z.record(confidenceSchema).optional(),
+  _confidence: z.preprocess(normalizeConfidenceField, z.record(confidenceSchema).optional()),
 });
 
 const extractionResponseSchema = z.array(rowSchema);
@@ -52,6 +68,35 @@ function extractJson(text: string): string {
     if (end > objectStart) return trimmed.slice(objectStart, end + 1);
   }
   return trimmed;
+}
+
+function parseExtractionResponse(content: string): RawLlmRow[] {
+  const jsonStr = extractJson(content);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonStr);
+  } catch {
+    throw new Error('LLM returned invalid JSON');
+  }
+
+  const records = Array.isArray(parsed)
+    ? parsed
+    : (parsed as { records?: unknown }).records ?? (parsed as { data?: unknown }).data;
+
+  return extractionResponseSchema.parse(records) as RawLlmRow[];
+}
+
+function hasDuplicateContactKeys(rows: RawLlmRow[]): boolean {
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const email = row.email?.trim().toLowerCase();
+    const phone = row.mobile_without_country_code?.replace(/\D/g, '');
+    const key = email || phone || '';
+    if (!key) continue;
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
 }
 
 async function callOpenAi(systemPrompt: string, userPrompt: string): Promise<{ content: string }> {
@@ -184,14 +229,27 @@ async function completeWithFallback(
 }
 
 function buildExtractionUserPrompt(headers: string[], rows: Record<string, string>[]): string {
+  const numberedRows = rows.map((row, i) => ({ _row: i + 1, ...row }));
   return `${FEW_SHOT_EXAMPLES}
 
 Headers: ${JSON.stringify(headers)}
-Rows (${rows.length}):
-${JSON.stringify(rows)}
+Rows (${rows.length}, in order):
+${JSON.stringify(numberedRows)}
 
-CRITICAL: Return EXACTLY ${rows.length} records — one per input row, in the same order.
-Return a JSON object: { "records": [ ...array of exactly ${rows.length} mapped records... ] }`;
+CRITICAL:
+- Return EXACTLY ${rows.length} records in the SAME ORDER as the input rows.
+- One output record per input row — never skip, never duplicate.
+Return JSON: { "records": [ ...exactly ${rows.length} objects... ] }`;
+}
+
+function buildSingleRowPrompt(headers: string[], row: Record<string, string>): string {
+  return `${FEW_SHOT_EXAMPLES}
+
+Headers: ${JSON.stringify(headers)}
+Single row:
+${JSON.stringify(row)}
+
+Return JSON: { "records": [ one mapped CRM object for this row only ] }`;
 }
 
 function computeLlmChunkSize(headers: string[], rowCount: number): number {
@@ -201,42 +259,60 @@ function computeLlmChunkSize(headers: string[], rowCount: number): number {
   return Math.min(rowCount, 15);
 }
 
+async function extractSingleRow(
+  headers: string[],
+  row: Record<string, string>
+): Promise<RawLlmRow> {
+  const { content } = await completeWithFallback(
+    CRM_EXTRACTION_SYSTEM_PROMPT,
+    buildSingleRowPrompt(headers, row)
+  );
+  const records = parseExtractionResponse(content);
+  if (records.length !== 1) {
+    throw new Error(`LLM single-row extraction returned ${records.length} records, expected 1`);
+  }
+  return records[0]!;
+}
+
+async function extractRowsIndividually(
+  headers: string[],
+  rows: Record<string, string>[]
+): Promise<RawLlmRow[]> {
+  const results: RawLlmRow[] = [];
+  for (const row of rows) {
+    results.push(await extractSingleRow(headers, row));
+  }
+  return results;
+}
+
 async function extractCrmRecordsChunk(
   headers: string[],
   rows: Record<string, string>[]
 ): Promise<AiCompletionResult> {
+  if (rows.length === 1) {
+    return { rows: [await extractSingleRow(headers, rows[0]!)] };
+  }
+
   const { content } = await completeWithFallback(
     CRM_EXTRACTION_SYSTEM_PROMPT,
     buildExtractionUserPrompt(headers, rows)
   );
 
-  const jsonStr = extractJson(content);
-  let parsed: unknown;
+  let validated: RawLlmRow[];
   try {
-    parsed = JSON.parse(jsonStr);
+    validated = parseExtractionResponse(content);
   } catch {
-    throw new Error('LLM returned invalid JSON');
+    return { rows: await extractRowsIndividually(headers, rows) };
   }
 
-  const records = Array.isArray(parsed)
-    ? parsed
-    : (parsed as { records?: unknown }).records ?? (parsed as { data?: unknown }).data;
+  const countMismatch = validated.length !== rows.length;
+  const duplicateContacts = hasDuplicateContactKeys(validated);
 
-  const validated = extractionResponseSchema.parse(records);
-
-  if (validated.length < rows.length) {
-    const missingRows = rows.slice(validated.length);
-    const retry = await extractCrmRecordsChunk(headers, missingRows);
-    return {
-      rows: [...(validated as RawLlmRow[]), ...retry.rows],
-    };
+  if (countMismatch || duplicateContacts) {
+    return { rows: await extractRowsIndividually(headers, rows) };
   }
 
-  if (validated.length > rows.length) {
-    return { rows: (validated as RawLlmRow[]).slice(0, rows.length) };
-  }
-
-  return { rows: validated as RawLlmRow[] };
+  return { rows: validated };
 }
 
 export async function extractCrmRecords(
@@ -249,6 +325,9 @@ export async function extractCrmRecords(
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
     const result = await extractCrmRecordsChunk(headers, chunk);
+    if (result.rows.length !== chunk.length) {
+      throw new Error(`LLM returned ${result.rows.length} records, expected ${chunk.length}`);
+    }
     allRows.push(...result.rows);
   }
 

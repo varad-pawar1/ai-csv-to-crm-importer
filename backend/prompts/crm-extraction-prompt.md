@@ -44,7 +44,7 @@ CORE RULES
 
 3. NULL OVER GUESS: when uncertain, output null and mark that field's _confidence "low" (only if you decided to populate it at all — see CONFIDENCE section). This applies to every field, not only the enums.
 
-4. ROW ORDER: output exactly one record per input row, in the same order, including fully blank or malformed rows. Never drop, merge, or reorder rows.
+4. ROW ORDER: output exactly one record per input row, in the same order, including fully blank or malformed rows. Never drop, merge, or reorder rows. This is true even for rows that will ultimately be excluded from the CRM import — the skip decision (no usable email AND no usable phone) is applied downstream by the backend after receiving your output, using the email and mobile_without_country_code fields you return. Your job is complete, ordered extraction; never omit a row from the array to implement the skip yourself.
 
 5. NO HALLUCINATION: never invent names, emails, phones, cities, companies, or enum values, and never use a header's own name as if it were a value.
 
@@ -77,6 +77,28 @@ Step 2 — Match by value type FIRST, header text SECOND. Headers can be missing
 Step 3 — Put genuinely useful unmapped info into crm_note (see CRM_NOTE rules). Drop meaningless identifiers instead of preserving them.
 
 ═══════════════════════════════════════
+SIGNAL PRIORITY & SPECIAL CASES
+═══════════════════════════════════════
+When signals conflict, resolve in this order:
+1. The row's own value shape/meaning (Rule 2, Step A) — always wins first.
+2. The batch-level column map from PHASE 1 — only consulted when the row's own value is itself ambiguous, malformed, or empty.
+3. The column header text — a supporting hint only, never authoritative on its own.
+4. Null — the default whenever none of the above gives reasonable confidence.
+Never let header text override a clear value signal. Never let the batch-level column map override a row whose own value clearly disagrees with it.
+
+DUPLICATE VALUES: if the exact same value appears in more than one source column (e.g. "Email" and "Secondary Email" both hold the identical address), populate the CRM field once — do not also list it again in crm_note as an "additional" entry. Only genuinely different extra values belong in crm_note.
+
+DUPLICATE HEADERS: if the same header name appears more than once in a row, treat each occurrence as an independent column and classify its value on its own — don't assume they hold the same kind of data just because the names match.
+
+EMPTY HEADERS: a blank or missing header name doesn't make a column unusable — classify its value the same way as any other column, purely by shape and meaning.
+
+EXCEL SERIAL DATES: if a column expected to hold a date instead contains a bare integer roughly in the 40000-50000 range, treat it as an Excel serial date (days since 1899-12-30) and convert it to a real calendar date rather than treating it as a phone number or identifier.
+
+SPREADSHEET FORMULAS: if a cell's value starts with "=", "+", "-", or "@" followed by what looks like a formula (e.g. "=SUM(A1:A2)"), it does not contain usable lead data — leave the corresponding field null rather than interpreting it.
+
+Headers may occasionally appear in a language other than English. Infer meaning from the value and surrounding context rather than assuming header text must be in English.
+
+═══════════════════════════════════════
 FIELD-SPECIFIC RULES
 ═══════════════════════════════════════
 
@@ -84,10 +106,12 @@ NAME
 - The value that is a person's full name per PHASE 2's classification, including any honorific/professional prefix, kept as written ("Dr Ravi Shah", "Mr. Patel", "CA Amit", "Adv. Mehta" are all valid names).
 - A name whose first word matches an email's local-part is a supporting signal, not a requirement — role-based local-parts ("info", "sales", "contact") are not name signals at all.
 - If one cell contains both a person and a company, split them: name gets the person, company gets the business part.
+- A short word+number token (e.g. "Customer 1", "Lead 42", "Guest A2") under a header that unambiguously says "Name"/"Lead Name"/"Customer Name"/"Full Name" is still usable as name at medium confidence, even though it fails the strict no-digits shape test — the clear header is the deciding signal here, the same way header confirmation rescues COMPANY values that lack a legal suffix. Without that kind of unambiguous header, a digit-bearing token is not name-shaped and should stay null.
 
 EMAIL
+- A value must have a non-empty local part AND a non-empty domain part to count as email-shaped at all. "customer@", "@gmail.com", and a bare "@" are NOT valid emails — one side of the @ is missing entirely — leave email null for that cell rather than accepting the fragment. This is different from a domain that's merely incomplete (see below): "customer@" has no domain whatsoever, while "john@gmail" has a real domain that's just missing its TLD.
 - First valid email in the row, searching all columns if needed. Lowercase the output.
-- Recognize and normalize obvious malformed-but-clearly-intended emails: "x(at)gmail.com" -> "x@gmail.com"; a domain typo like "gmail,com" (comma instead of dot) -> "gmail.com"; an email-shaped value missing its top-level domain ("john@gmail" with no ".com") -> keep as-is, don't invent the missing part. Only apply obvious, low-risk corrections like these — never guess at anything genuinely unclear.
+- Recognize and normalize obvious malformed-but-clearly-intended emails: "x(at)gmail.com" -> "x@gmail.com"; a domain typo like "gmail,com" (comma instead of dot) -> "gmail.com"; an email-shaped value missing its top-level domain ("john@gmail" with no ".com") -> keep as-is, don't invent the missing part. Only apply obvious, low-risk corrections like these — never guess at anything genuinely unclear, and never extend this tolerance to a value with an empty domain (see above).
 - Multiple emails: first goes to email; remaining go to crm_note as "Additional email: ...". Exception: see LEAD_OWNER below.
 
 PHONE
@@ -109,10 +133,14 @@ CITY / STATE / COUNTRY
 - Map geographic values only. Split a combined "City, State, Country" cell by comma in that order; split "City, State" similarly if plausible.
 - If two recognizable place names sit in one cell with no separating comma at all ("Pune Maharashtra"), split them anyway using your own knowledge of real Indian cities/states — a missing comma is not a reason to leave the whole string bundled into city.
 - Never map emails, phones, companies, or IDs into location fields.
+- A value that is a recognizable ad platform, marketing channel, or campaign source (Google, Facebook, Instagram, YouTube, WhatsApp, LinkedIn, Organic, Direct, Referral, etc.) is NEVER city/state/country, even if the column header says "City"/"City Name"/"Location". These are channel/source signals, not geography. Check data_source first; if it doesn't match one of the five known values, drop it or note it in crm_note as "Channel: <value>" — never place it in city/state/country.
 
 CREATED_AT
 - Output as "YYYY-MM-DD HH:mm:ss" (GrowEasy's own sample format) — parseable by JavaScript's Date constructor, same as full ISO 8601. Use one format consistently across every record in a batch.
 - If no time is present, use 00:00:00. If no date at all is present, leave null.
+- Numeric dates with slashes or dashes are frequently ambiguous between DD/MM/YYYY and MM/DD/YYYY. Resolve the convention at the BATCH level, not per row: scan the same date column across the whole batch for any unambiguous value (a first-position number greater than 12 can only be a day, e.g. "15" in "07-15-2026" — proving MM-DD in that example). Apply whatever convention that reveals to every date in the column, including the ambiguous ones. If nothing in the column ever disambiguates it, default to DD/MM/YYYY (GrowEasy's own locale).
+- A date where neither reading is valid (e.g. "32/01/2026" — no month has a 32nd day) is not a real date. Leave created_at null rather than forcing it into either interpretation.
+- A placeholder or non-date string in a date-typed cell ("invalid-date", "TBD", "N/A", "-") is treated the same as any other malformed/empty cell — leave created_at null.
 
 POSSESSION_TIME
 - Keep as free text, lightly cleaned up, exactly as it reads in the source ("Dec 2027", "Ready to move", "Q3 2026"). Do NOT force this into a date/ISO format, and do NOT null it out just because it isn't a clean date.
@@ -180,6 +208,7 @@ OUTPUT FORMAT (strict JSON object — no markdown, no text outside the object)
     }
   ]
 }`;
+
 
 ═══════════════════════════════════════
 PRIORITY ORDER when signals conflict
@@ -264,6 +293,35 @@ Row A: {"Company":"GrowEasy","Name":"Zoya Sheikh","Email":"zoya@example.com"}
 Row B: {"Company":"GrowEasy","Name":"Karan Malhotra","Email":"karan@example.com"}
 Row C: {"Company":"GrowEasy","Name":"Divya Nair","Email":"divya@example.com"}
 Because "GrowEasy" repeats identically across the whole batch under a column headed "Company", treat it confidently as company for every row, even though "GrowEasy" alone carries no legal suffix — this is PHASE 1's batch-wide prior confirming the column's identity.
+
+═══════════════════════════════════════
+EXAMPLE 15 — A bare "@" is not an email
+═══════════════════════════════════════
+Headers: ["Name","Contact","Mail"]
+Row: {"Name":null,"Contact":"abcdefgh","Mail":"customer@"}
+"abcdefgh" has no digits, so it isn't phone-shaped. "customer@" has an @ but nothing after it — no domain at all — so it isn't email-shaped either, unlike "john@gmail" which has a real (if incomplete) domain.
+Output: {"created_at":null,"name":null,"email":null,"country_code":null,"mobile_without_country_code":null,"company":null,"city":null,"state":null,"country":null,"lead_owner":null,"crm_status":null,"crm_note":null,"data_source":null,"possession_time":null,"description":null,"_confidence":{}}
+(no usable email or phone anywhere in the row — this record will be skipped downstream once the backend applies the email/mobile filter)
+
+═══════════════════════════════════════
+EXAMPLE 16 — Batch-level date convention, and an impossible date
+═══════════════════════════════════════
+Headers: ["Name","Lead Date"]
+Row A: {"Name":"Ravi Kumar","Lead Date":"07-15-2026"}
+Row B: {"Name":"Sana Sheikh","Lead Date":"01/07/2026"}
+Row C: {"Name":"Tom Abraham","Lead Date":"32/01/2026"}
+Row A's "07-15-2026" can only be MM-DD-YYYY (no month has a 15th day), which fixes the batch's convention. Row B's "01/07/2026" is then read the same way: MM-DD -> January 7, 2026. Row C's "32/01/2026" has no valid day in either reading, so it stays null.
+Output A: {"name":"Ravi Kumar","created_at":"2026-07-15 00:00:00", ...rest null}
+Output B: {"name":"Sana Sheikh","created_at":"2026-01-07 00:00:00", ...rest null, "_confidence":{"created_at":"medium"}}
+Output C: {"name":"Tom Abraham","created_at":null, ...rest null}
+
+═══════════════════════════════════════
+EXAMPLE 17 — Placeholder-style name confirmed by an unambiguous header
+═══════════════════════════════════════
+Headers: ["Lead Name","Contact","Mail"]
+Row: {"Lead Name":"Customer 1","Contact":"+91 9940123833","Mail":"customer1@example.com"}
+"Customer 1" contains a digit, which fails the strict name-shape test, but the header unambiguously says "Lead Name" — the same header-confirmation logic that rescues COMPANY values without a legal suffix applies here.
+Output: {"name":"Customer 1","email":"customer1@example.com","country_code":"+91","mobile_without_country_code":"9940123833", ...rest null, "_confidence":{"name":"medium","email":"high","country_code":"high","mobile_without_country_code":"high"}}
 `;
 
 
@@ -299,4 +357,16 @@ Header: "Remarks"   Value: "Interested in villa"
 WRONG: crm_note: "Interested in villa" (assuming any "remark-labeled" column is automatically crm_note)
 CORRECT: description: "Interested in villa"
 (this describes what the lead wants, not an interaction event — see the CRM_NOTE vs DESCRIPTION test)
+
+Case 6:
+Header: "Email"   Value: "customer@"
+WRONG: email: "customer@"
+CORRECT: email: null
+("customer@" has an @ but nothing after it — no domain at all. This is not the same as "john@gmail", which is missing only a TLD but still has a real domain. A bare trailing "@" must not be counted as "has an email" when the backend later decides whether to skip the row.)
 `;
+
+Case 7:
+Header: "City Name"   Value: "Google"
+WRONG: city: "Google"
+CORRECT: city: null (kept in crm_note as "Channel: Google" if useful)
+("Google" is an ad-platform/channel name, not a place — a clear header never overrides the fact that the value isn't geography-shaped)

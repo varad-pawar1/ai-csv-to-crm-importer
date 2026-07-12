@@ -159,13 +159,33 @@ RUN_INTEGRATION_TESTS=true npm run test --workspace=backend
 
 Render sets `NODE_ENV=development` during build by default, which breaks Next.js static generation. The frontend build script already forces production mode via `cross-env`.
 
-**Frontend service settings:**
-- Root Directory: `frontend`
-- Build Command: `npm install --include=dev && npm run build`
-- Start Command: `npm start`
-- Env: `NODE_ENV=production`, `NEXT_PUBLIC_API_URL=https://your-backend.onrender.com`
+**Option A — deploy from repo root (single frontend service)**
 
-Or use the included [`render.yaml`](render.yaml) Blueprint.
+| Setting | Value |
+|---------|--------|
+| Build Command | `npm install && npm run build:frontend` |
+| Start Command | `npm start` |
+
+**Option B — deploy with Root Directory (recommended)**
+
+**Frontend service:**
+
+| Setting | Value |
+|---------|--------|
+| Root Directory | `frontend` |
+| Build Command | `npm install --include=dev && npm run build` |
+| Start Command | `npm start` |
+| Env | `NODE_ENV=production`, `NEXT_PUBLIC_API_URL=https://your-backend.onrender.com` |
+
+**Backend service:**
+
+| Setting | Value |
+|---------|--------|
+| Root Directory | `backend` |
+| Build Command | `npm install --include=dev && npm run build` |
+| Start Command | `npm start` |
+
+Or use the included [`render.yaml`](render.yaml) Blueprint for both services.
 
 ## Known Limitations
 
