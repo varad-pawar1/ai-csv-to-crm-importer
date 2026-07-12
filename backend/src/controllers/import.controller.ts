@@ -7,7 +7,7 @@ import { chunkRows } from '../services/batcher.service';
 import { enqueueBatches } from '../queue/batch.queue';
 import { streamImportProgress, buildProgressSnapshot } from '../services/sse.service';
 import { getExportHeaders, recordToExportRow } from '../services/crmMapper.service';
-import { CrmRecord, DedupPolicy } from '../types/crm.types';
+import { CrmRecord, CRM_FIELDS, DedupPolicy } from '../types/crm.types';
 import { AppError, RequestWithId } from '../middleware/errorHandler';
 import { getEnv } from '../config/env';
 import { childLogger } from '../utils/logger';
@@ -15,6 +15,47 @@ import { childLogger } from '../utils/logger';
 function getJobIdParam(req: Request): string {
   const id = req.params.jobId;
   return Array.isArray(id) ? id[0] : id;
+}
+
+type ResultFilter = 'all' | 'imported' | 'skipped' | 'low-confidence';
+
+function parseResultFilter(value: unknown): ResultFilter {
+  if (value === 'imported' || value === 'skipped' || value === 'low-confidence') return value;
+  return 'all';
+}
+
+function parsePage(value: unknown): number {
+  const page = Number(value);
+  return Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
+}
+
+function parseLimit(value: unknown): number {
+  const limit = Number(value);
+  if (!Number.isFinite(limit) || limit < 1) return 25;
+  return Math.min(Math.floor(limit), 100);
+}
+
+function buildRecordFilter(filter: ResultFilter): Record<string, unknown> {
+  if (filter === 'imported') return { skipped: false };
+  if (filter === 'skipped') return { skipped: true };
+  if (filter === 'low-confidence') {
+    return {
+      $or: CRM_FIELDS.map((field) => ({
+        [`mappedData._confidence.${field}`]: { $in: ['low', 'medium'] },
+      })),
+    };
+  }
+  return {};
+}
+
+function toCrmRecord(
+  record: { mappedData: unknown; skipReason?: string | null; skipped: boolean }
+): CrmRecord {
+  const mapped = record.mappedData as CrmRecord;
+  if (record.skipped && record.skipReason) {
+    return { ...mapped, _skip_reason: record.skipReason };
+  }
+  return mapped;
 }
 
 function computeBatchSize(headers: string[]): number {
@@ -98,13 +139,20 @@ export async function getImportResults(req: Request, res: Response, next: NextFu
     const job = await ImportJob.findById(jobId);
     if (!job) throw new AppError(404, 'Import job not found');
 
-    const records = await LeadRecord.find({ importJobId: job._id })
-      .sort({ rowIndex: 1 })
-      .lean();
+    const filter = parseResultFilter(req.query.filter);
+    const page = parsePage(req.query.page);
+    const limit = parseLimit(req.query.limit);
+    const query = { importJobId: job._id, ...buildRecordFilter(filter) };
 
-    const imported = records.filter((r) => !r.skipped);
-    const skipped = records.filter((r) => r.skipped);
-    const progress = await buildProgressSnapshot(jobId);
+    const [total, records, progress] = await Promise.all([
+      LeadRecord.countDocuments(query),
+      LeadRecord.find(query)
+        .sort({ rowIndex: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      buildProgressSnapshot(jobId),
+    ]);
 
     res.json({
       summary: {
@@ -114,11 +162,14 @@ export async function getImportResults(req: Request, res: Response, next: NextFu
         status: job.status,
         failedBatches: progress.failedBatches,
       },
-      imported: imported.map((r) => r.mappedData as unknown as CrmRecord),
-      skipped: skipped.map((r) => ({
-        ...(r.mappedData as unknown as CrmRecord),
-        _skip_reason: r.skipReason,
-      })),
+      records: records.map(toCrmRecord),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+        filter,
+      },
     });
   } catch (err) {
     next(err);
@@ -129,6 +180,7 @@ export async function exportImportResults(req: Request, res: Response, next: Nex
   try {
     const jobId = getJobIdParam(req);
     const format = (req.query.format as string) || 'csv';
+    const filter = parseResultFilter(req.query.filter);
 
     if (!Types.ObjectId.isValid(jobId)) {
       throw new AppError(400, 'Invalid job ID');
@@ -137,15 +189,16 @@ export async function exportImportResults(req: Request, res: Response, next: Nex
     const job = await ImportJob.findById(jobId);
     if (!job) throw new AppError(404, 'Import job not found');
 
-    const records = await LeadRecord.find({ importJobId: job._id })
+    const records = await LeadRecord.find({ importJobId: job._id, ...buildRecordFilter(filter) })
       .sort({ rowIndex: 1 })
       .lean();
 
-    const mappedRecords = records.map((r) => r.mappedData as unknown as CrmRecord);
+    const mappedRecords = records.map(toCrmRecord);
 
+    const filterSuffix = filter === 'all' ? '' : `-${filter}`;
     if (format === 'json') {
       res.setHeader('Content-Type', 'application/json');
-      res.setHeader('Content-Disposition', `attachment; filename="import-${jobId}.json"`);
+      res.setHeader('Content-Disposition', `attachment; filename="import-${jobId}${filterSuffix}.json"`);
       res.json(mappedRecords);
       return;
     }
@@ -155,7 +208,7 @@ export async function exportImportResults(req: Request, res: Response, next: Nex
     const csv = Papa.unparse({ fields: headers, data: rows.map((r) => headers.map((h) => r[h])) });
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="import-${jobId}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="import-${jobId}${filterSuffix}.csv"`);
     res.send(csv);
   } catch (err) {
     next(err);

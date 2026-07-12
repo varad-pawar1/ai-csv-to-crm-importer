@@ -10,11 +10,13 @@ import { Stepper } from '@/components/Stepper';
 import { FileUpload } from '@/components/FileUpload';
 import { CsvPreviewTable } from '@/components/CsvPreviewTable';
 import { DedupWarning } from '@/components/DedupWarning';
+import { ImportLoadingOverlay } from '@/components/ImportLoadingOverlay';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Alert } from '@/components/ui/Alert';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
 import { formatNumber } from '@/lib/utils';
+import { IMPORT_PENDING_KEY } from '@/lib/constants';
 
 export default function HomePage() {
   const router = useRouter();
@@ -43,15 +45,23 @@ export default function HomePage() {
   }, []);
 
   const handleStartImport = useCallback(async () => {
-    if (!file) return;
+    if (!file || isSubmitting) return;
     const jobId = await submitImport(file, dedupPolicy);
     if (jobId) {
+      sessionStorage.setItem(IMPORT_PENDING_KEY, jobId);
       router.push(`/import/${jobId}`);
     }
-  }, [file, dedupPolicy, submitImport, router]);
+  }, [file, dedupPolicy, submitImport, router, isSubmitting]);
 
   return (
     <div>
+      {isSubmitting && (
+        <ImportLoadingOverlay
+          message="Starting import..."
+          detail="Uploading your file and preparing AI mapping"
+        />
+      )}
+
       <Stepper currentStep={step} />
 
       {step === 'upload' && (
@@ -68,16 +78,19 @@ export default function HomePage() {
       {step === 'preview' && (
         <div className="space-y-6">
           <Card>
-            <h2 className="text-xl font-semibold mb-4">Preview Data</h2>
+            <h2 className="text-xl font-semibold mb-1">Preview Data</h2>
+            <p className="text-sm text-slate-500 mb-4">
+              All {formatNumber(rows.length)} rows loaded — browse every row using pagination below.
+            </p>
             <CsvPreviewTable headers={headers} rows={rows} />
           </Card>
 
           <div className="flex justify-between">
-            <Button variant="secondary" onClick={() => setStep('upload')}>
+            <Button variant="secondary" onClick={() => setStep('upload')} disabled={isSubmitting}>
               <ArrowLeft className="h-4 w-4" />
               Back
             </Button>
-            <Button onClick={() => setStep('confirm')}>
+            <Button onClick={() => setStep('confirm')} disabled={isSubmitting}>
               Continue
               <ArrowRight className="h-4 w-4" />
             </Button>
@@ -113,11 +126,11 @@ export default function HomePage() {
           {submitError && <Alert variant="error">{submitError}</Alert>}
 
           <div className="flex justify-between">
-            <Button variant="secondary" onClick={() => setStep('preview')}>
+            <Button variant="secondary" onClick={() => setStep('preview')} disabled={isSubmitting}>
               <ArrowLeft className="h-4 w-4" />
               Back
             </Button>
-            <Button onClick={handleStartImport} isLoading={isSubmitting}>
+            <Button onClick={handleStartImport} isLoading={isSubmitting} disabled={isSubmitting}>
               Start Import
               <ArrowRight className="h-4 w-4" />
             </Button>

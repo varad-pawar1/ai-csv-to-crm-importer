@@ -18,20 +18,21 @@ export function Stepper({ currentStep }: StepperProps) {
   const currentIndex = STEPS.findIndex((s) => s.id === currentStep);
 
   return (
-    <nav aria-label="Import progress" className="mb-8">
-      <ol className="flex items-center justify-between">
+    <nav aria-label="Import progress" className="mb-8 flex justify-center">
+      <ol className="inline-flex items-center">
         {STEPS.map((step, index) => {
           const isComplete = index < currentIndex;
           const isCurrent = index === currentIndex;
 
           return (
-            <li key={step.id} className="flex flex-1 items-center">
-              <div className="flex flex-col items-center gap-1">
+            <li key={step.id} className="flex items-center">
+              <div className="flex flex-col items-center gap-1 min-w-[4.5rem] sm:min-w-[5.5rem]">
                 <div
                   className={cn(
-                    'flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors',
+                    'flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition-colors shrink-0',
                     isComplete && 'bg-brand-600 text-white',
-                    isCurrent && 'bg-brand-100 dark:bg-brand-900 text-brand-700 dark:text-brand-300 ring-2 ring-brand-600',
+                    isCurrent &&
+                      'bg-brand-100 dark:bg-brand-900 text-brand-700 dark:text-brand-300 ring-2 ring-brand-600',
                     !isComplete && !isCurrent && 'bg-slate-100 dark:bg-slate-800 text-slate-400'
                   )}
                   aria-current={isCurrent ? 'step' : undefined}
@@ -40,17 +41,18 @@ export function Stepper({ currentStep }: StepperProps) {
                 </div>
                 <span
                   className={cn(
-                    'text-xs font-medium hidden sm:block',
+                    'text-xs font-medium hidden sm:block text-center whitespace-nowrap',
                     isCurrent ? 'text-brand-700 dark:text-brand-300' : 'text-slate-500'
                   )}
                 >
                   {step.label}
                 </span>
               </div>
+
               {index < STEPS.length - 1 && (
                 <div
                   className={cn(
-                    'mx-2 h-0.5 flex-1',
+                    'h-0.5 w-8 sm:w-16 md:w-24 mx-1 sm:mx-2 shrink-0',
                     isComplete ? 'bg-brand-600' : 'bg-slate-200 dark:bg-slate-700'
                   )}
                   aria-hidden="true"

@@ -1,17 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { useImportProgress } from '@/hooks/useImportProgress';
-import { getImportResults } from '@/lib/api';
 import { ImportResults } from '@/types/crm';
 import { ProcessingView } from '@/components/ProcessingView';
 import { ImportSummary } from '@/components/ImportSummary';
 import { ResultTable } from '@/components/ResultTable';
+import { ImportLoadingOverlay } from '@/components/ImportLoadingOverlay';
 import { Stepper } from '@/components/Stepper';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Alert } from '@/components/ui/Alert';
+import { IMPORT_PENDING_KEY } from '@/lib/constants';
 
 export default function ImportJobPage() {
   const params = useParams();
@@ -19,26 +20,44 @@ export default function ImportJobPage() {
   const jobId = params.jobId as string;
 
   const { progress, batchFailures, isConnected, error: connectionError } = useImportProgress(jobId);
-  const [results, setResults] = useState<ImportResults | null>(null);
-  const [resultsError, setResultsError] = useState<string | null>(null);
-  const [loadingResults, setLoadingResults] = useState(false);
+  const [isBootstrapping, setIsBootstrapping] = useState(false);
 
   const isDone = progress?.status === 'done' || progress?.status === 'failed';
 
+  const summary = useMemo<ImportResults['summary'] | null>(() => {
+    if (!isDone || !progress) return null;
+    return {
+      totalRows: progress.totalRows,
+      importedCount: progress.importedCount,
+      skippedCount: progress.skippedCount,
+      status: progress.status,
+      failedBatches: progress.failedBatches,
+    };
+  }, [isDone, progress]);
+
   useEffect(() => {
-    if (!isDone || results) return;
+    const pendingJobId = sessionStorage.getItem(IMPORT_PENDING_KEY);
+    setIsBootstrapping(pendingJobId === jobId);
+  }, [jobId]);
 
-    setLoadingResults(true);
-    getImportResults(jobId)
-      .then(setResults)
-      .catch((err) => setResultsError(err instanceof Error ? err.message : 'Failed to load results'))
-      .finally(() => setLoadingResults(false));
-  }, [isDone, jobId, results]);
+  useEffect(() => {
+    if (!progress && !isConnected) return;
+    sessionStorage.removeItem(IMPORT_PENDING_KEY);
+    setIsBootstrapping(false);
+  }, [progress, isConnected]);
 
-  const step = isDone && results ? 'result' : 'processing';
+  const step = isDone && summary ? 'result' : 'processing';
+  const showBootstrapOverlay = isBootstrapping && !progress;
 
   return (
     <div>
+      {showBootstrapOverlay && (
+        <ImportLoadingOverlay
+          message="Connecting to import..."
+          detail="Your file was uploaded — setting up live progress"
+        />
+      )}
+
       <Stepper currentStep={step} />
 
       {!isDone && (
@@ -50,7 +69,7 @@ export default function ImportJobPage() {
         />
       )}
 
-      {isDone && loadingResults && (
+      {isDone && !summary && (
         <Card>
           <div className="flex items-center gap-3 text-slate-500">
             <div className="animate-spin h-5 w-5 border-2 border-brand-600 border-t-transparent rounded-full" />
@@ -59,15 +78,17 @@ export default function ImportJobPage() {
         </Card>
       )}
 
-      {resultsError && <Alert variant="error">{resultsError}</Alert>}
+      {connectionError && isDone && !summary && (
+        <Alert variant="error">{connectionError}</Alert>
+      )}
 
-      {isDone && results && (
+      {isDone && summary && (
         <div className="space-y-6">
-          <ImportSummary jobId={jobId} results={results} />
+          <ImportSummary summary={summary} />
 
           <Card>
             <h3 className="text-lg font-semibold mb-4">Mapped Records</h3>
-            <ResultTable records={[...results.imported, ...results.skipped]} />
+            <ResultTable jobId={jobId} />
           </Card>
 
           <div className="flex justify-center">
