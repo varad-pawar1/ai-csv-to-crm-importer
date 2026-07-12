@@ -23,8 +23,6 @@ const DISPLAY_FIELDS: CrmField[] = [
   'crm_note',
 ];
 
-const ROW_HEIGHT_CLASS = 'h-[42px]';
-
 function getConfidenceClass(
   record: CrmRecord,
   field: CrmField,
@@ -107,8 +105,8 @@ export function ResultTable({ jobId }: ResultTableProps) {
   };
 
   const filterLabel = FILTER_LABELS[filter];
-  const emptyRows = Math.max(0, TABLE_PAGE_SIZE - records.length);
   const canExport = !isLoading && pagination.total > 0;
+  const skeletonRows = Math.min(5, TABLE_PAGE_SIZE);
 
   return (
     <div ref={tableRef} className="space-y-3 min-w-0">
@@ -179,10 +177,10 @@ export function ResultTable({ jobId }: ResultTableProps) {
                 ))}
               </tr>
             </thead>
-            <tbody style={{ minHeight: TABLE_PAGE_SIZE * 42 }}>
+            <tbody>
               {isLoading ? (
-                Array.from({ length: TABLE_PAGE_SIZE }).map((_, i) => (
-                  <tr key={i} className={cn('border-b border-slate-100 dark:border-slate-800', ROW_HEIGHT_CLASS)}>
+                Array.from({ length: skeletonRows }).map((_, i) => (
+                  <tr key={i} className="border-b border-slate-100 dark:border-slate-800">
                     {Array.from({ length: DISPLAY_FIELDS.length + 1 }).map((__, j) => (
                       <td key={j} className="px-3 py-3">
                         <div className="h-4 bg-slate-100 dark:bg-slate-800 rounded animate-pulse" />
@@ -203,60 +201,47 @@ export function ResultTable({ jobId }: ResultTableProps) {
                   </td>
                 </tr>
               ) : (
-                <>
-                  {records.map((record, index) => {
-                    const rowNum = (pagination.page - 1) * pagination.limit + index + 1;
-                    return (
-                      <tr
-                        key={`${pagination.page}-${rowNum}`}
-                        className={cn(
-                          'border-b border-slate-100 dark:border-slate-800',
-                          ROW_HEIGHT_CLASS,
-                          record._skipped && 'opacity-60'
-                        )}
-                      >
-                        <td className="px-3 py-2.5 text-slate-400 text-xs align-middle">{rowNum}</td>
-                        {DISPLAY_FIELDS.map((field) => {
-                          const cellValue =
-                            record[field] ??
-                            (field === 'crm_note' && record._skip_reason ? record._skip_reason : null);
-                          const displayText = cellValue != null ? String(cellValue) : null;
+                records.map((record, index) => {
+                  const rowNum = (pagination.page - 1) * pagination.limit + index + 1;
+                  return (
+                    <tr
+                      key={`${pagination.page}-${rowNum}`}
+                      className={cn(
+                        'border-b border-slate-100 dark:border-slate-800',
+                        record._skipped && 'opacity-60'
+                      )}
+                    >
+                      <td className="px-3 py-2.5 text-slate-400 text-xs align-middle">{rowNum}</td>
+                      {DISPLAY_FIELDS.map((field) => {
+                        const cellValue =
+                          record[field] ??
+                          (field === 'crm_note' && record._skip_reason ? record._skip_reason : null);
+                        const displayText = cellValue != null ? String(cellValue) : null;
 
-                          return (
-                            <td
-                              key={field}
-                              className={cn(
-                                'px-3 py-2.5 align-middle whitespace-nowrap',
-                                getConfidenceClass(record, field, record[field])
-                              )}
-                              title={displayText ?? undefined}
-                            >
-                              {displayText ? (
-                                field === 'crm_note' && record._skip_reason && !record[field] ? (
-                                  <span className="text-amber-600 text-xs">{displayText}</span>
-                                ) : (
-                                  displayText
-                                )
+                        return (
+                          <td
+                            key={field}
+                            className={cn(
+                              'px-3 py-2.5 align-middle whitespace-nowrap',
+                              getConfidenceClass(record, field, record[field])
+                            )}
+                            title={displayText ?? undefined}
+                          >
+                            {displayText ? (
+                              field === 'crm_note' && record._skip_reason && !record[field] ? (
+                                <span className="text-amber-600 text-xs">{displayText}</span>
                               ) : (
-                                <span className="text-slate-300">—</span>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                  {emptyRows > 0 &&
-                    Array.from({ length: emptyRows }).map((_, i) => (
-                      <tr
-                        key={`empty-${i}`}
-                        className={cn('border-b border-slate-100/50 dark:border-slate-800/50', ROW_HEIGHT_CLASS)}
-                        aria-hidden="true"
-                      >
-                        <td colSpan={DISPLAY_FIELDS.length + 1} />
-                      </tr>
-                    ))}
-                </>
+                                displayText
+                              )
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

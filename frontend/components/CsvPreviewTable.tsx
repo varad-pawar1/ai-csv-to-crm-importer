@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PREVIEW_PAGE_SIZE } from '@/lib/constants';
-import { cn } from '@/lib/utils';
 import { Pagination } from './ui/Pagination';
 
 interface CsvPreviewTableProps {
@@ -10,8 +9,6 @@ interface CsvPreviewTableProps {
   rows: Record<string, string>[];
   pageSize?: number;
 }
-
-const ROW_HEIGHT_CLASS = 'h-[40px]';
 
 export function CsvPreviewTable({ headers, rows, pageSize = PREVIEW_PAGE_SIZE }: CsvPreviewTableProps) {
   const [page, setPage] = useState(1);
@@ -38,7 +35,6 @@ export function CsvPreviewTable({ headers, rows, pageSize = PREVIEW_PAGE_SIZE }:
 
   const startRow = rows.length === 0 ? 0 : (page - 1) * pageSize + 1;
   const endRow = Math.min(page * pageSize, rows.length);
-  const emptyRows = Math.max(0, pageSize - displayRows.length);
 
   return (
     <div ref={tableRef} className="space-y-3 min-w-0">
@@ -72,34 +68,32 @@ export function CsvPreviewTable({ headers, rows, pageSize = PREVIEW_PAGE_SIZE }:
                 ))}
               </tr>
             </thead>
-            <tbody style={{ minHeight: pageSize * 40 }}>
-              {displayRows.map((row, rowIndex) => (
-                <tr
-                  key={startRow + rowIndex}
-                  className={cn('border-b border-slate-100 dark:border-slate-800', ROW_HEIGHT_CLASS)}
-                >
-                  <td className="px-3 py-2 text-slate-400 text-xs align-middle">{startRow + rowIndex}</td>
-                  {headers.map((header) => (
-                    <td
-                      key={header}
-                      className="px-3 py-2 text-slate-700 dark:text-slate-300 align-middle whitespace-nowrap"
-                      title={row[header] ?? undefined}
-                    >
-                      {row[header] || <span className="text-slate-300">—</span>}
-                    </td>
-                  ))}
+            <tbody>
+              {displayRows.length === 0 ? (
+                <tr>
+                  <td colSpan={headers.length + 1} className="px-3 py-8 text-center text-slate-500">
+                    No rows on this page
+                  </td>
                 </tr>
-              ))}
-              {emptyRows > 0 &&
-                Array.from({ length: emptyRows }).map((_, i) => (
+              ) : (
+                displayRows.map((row, rowIndex) => (
                   <tr
-                    key={`empty-${i}`}
-                    className={cn('border-b border-slate-100/50 dark:border-slate-800/50', ROW_HEIGHT_CLASS)}
-                    aria-hidden="true"
+                    key={startRow + rowIndex}
+                    className="border-b border-slate-100 dark:border-slate-800"
                   >
-                    <td colSpan={headers.length + 1} />
+                    <td className="px-3 py-2 text-slate-400 text-xs align-middle">{startRow + rowIndex}</td>
+                    {headers.map((header) => (
+                      <td
+                        key={header}
+                        className="px-3 py-2 text-slate-700 dark:text-slate-300 align-middle whitespace-nowrap"
+                        title={row[header] ?? undefined}
+                      >
+                        {row[header] || <span className="text-slate-300">—</span>}
+                      </td>
+                    ))}
                   </tr>
-                ))}
+                ))
+              )}
             </tbody>
           </table>
         </div>
