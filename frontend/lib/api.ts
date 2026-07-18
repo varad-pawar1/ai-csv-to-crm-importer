@@ -6,7 +6,6 @@ import {
 } from '@/types/crm';
 
 const API_BASE = '/api/import';
-const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || '';
 
 export class ApiError extends Error {
   constructor(
@@ -98,8 +97,5 @@ export async function downloadExport(
 }
 
 export function getStreamUrl(jobId: string): string {
-  if (BACKEND_URL) {
-    return `${BACKEND_URL}/api/import/${jobId}/stream`;
-  }
   return `${API_BASE}/${jobId}/stream`;
 }
